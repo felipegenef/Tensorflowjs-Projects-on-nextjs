@@ -19,14 +19,23 @@
         tfvis.visor().toggle();
       }
       async function predict() {
-        const predictionInput = parseInt(
-          document.getElementById("prediction-input").value
+        const predictionInputOne = parseInt(
+          document.getElementById("prediction-input-1").value
         );
-        if (isNaN(predictionInput)) {
+        const predictionInputTwo = parseInt(
+          document.getElementById("prediction-input-2").value
+        );
+        if (isNaN(predictionInputOne) || isNaN(predictionInputTwo)) {
           alert("Please enter a valid number");
+        } else if (predictionInputOne < 200) {
+          alert("Please enter a value above 200 sqft");
+        } else if (predictionInputTwo < 75000) {
+          alert("Please enter a value above $75,000");
         } else {
           tf.tidy(() => {
-            const inputTensor = tf.tensor1d([predictionInput]);
+            const inputTensor = tf.tensor2d([
+              [predictionInputOne, predictionInputTwo],
+            ]);
             const normalizedInput = normalise(
               inputTensor,
               normalisedFeature.min,
@@ -41,25 +50,23 @@
             const [outputValue] = outputTensor.dataSync();
             document.getElementById(
               "prediction-output"
-            ).innerHTML = `The predicted house price is <br> <span style="font-size: 2em">\$${(
-              parseFloat((outputValue / 1000).toFixed(2)) * 1000
-            )
-              .toFixed(2)
-              .replace(".", ",")}</span>`;
+            ).innerHTML = `The likehood of being a waterfront property is<br><span style="font-size: 2em">${parseFloat(
+              (outputValue * 100).toFixed(1)
+            )}%</span>`;
           });
         }
       }
-
       async function load() {
         const localStorageKey = `localstorage://${storageId}`;
         const models = await tf.io.listModels();
         const modelInfo = models[localStorageKey];
         if (modelInfo) {
           model = await tf.loadLayersModel(localStorageKey);
+          await plotPredictionHeatMap();
           tfvis.show.modelSummary({ name: "Model summary" }, model);
           const layer = model.getLayer(undefined, 0);
           tfvis.show.layer({ name: "Layer 1" }, layer);
-          await plotPredictionLine();
+
           document.getElementById(
             "model-status"
           ).innerHTML = `Trained (saved ${modelInfo.dateSaved})`;
@@ -69,7 +76,7 @@
           alert("Could not load: no saved model found");
         }
       }
-      const storageId = "kc-house-price-regression";
+      const storageId = "kc-house-price-binary";
       async function save() {
         const saveResults = await model.save(`localstorage://${storageId}`);
 
@@ -94,7 +101,6 @@
           "testing-status"
         ).innerHTML = `Testing set loss: ${loss.toPrecision(5)}`;
       }
-
       async function train() {
         ["train", "test", "load", "predict", "save"].forEach((id) => {
           document
@@ -102,7 +108,9 @@
             .setAttribute("disabled", "disabled");
         });
         document.getElementById("model-status").innerHTML = "Training...";
+
         const model = createModel();
+
         tfvis.show.modelSummary({ name: "Model summary" }, model);
         const layer = model.getLayer(undefined, 0);
         tfvis.show.layer({ name: "Layer 1" }, layer);
@@ -112,7 +120,8 @@
           trainingFeatureTensor,
           trainingLabelTensor
         );
-        await plotPredictionLine();
+
+        await plotPredictionHeatMap();
         console.log(result);
         const trainingLoss = result.history.loss.pop();
         console.log(`Training set loss: ${trainingLoss}`);
@@ -125,6 +134,71 @@
           `Validation Loss: ${validationLoss.toPrecision(5)}`;
         document.getElementById("test-button").removeAttribute("disabled");
         document.getElementById("save-button").removeAttribute("disabled");
+      }
+      async function plotPredictionHeatMap(
+        name = "Predicted class",
+        size = 400
+      ) {
+        const [valuesPromise, xTicksPromise, yTicksPromise] = await tf.tidy(
+          () => {
+            const gridSize = 50;
+            const predictionColumns = [];
+            for (let colIndex = 0; colIndex < gridSize; colIndex++) {
+              const colInputs = [];
+              const x = colIndex / gridSize;
+              for (let rowIndex = 0; rowIndex < gridSize; rowIndex++) {
+                const y = (gridSize - rowIndex) / gridSize;
+                colInputs.push([x, y]);
+              }
+
+              const colPredictions = model.predict(tf.tensor2d(colInputs));
+              predictionColumns.push(colPredictions);
+            }
+            const valuesTensor = tf.stack(predictionColumns);
+            const normalisedTicksTensor = tf.linspace(0, 1, gridSize);
+            const xTicksTensor = denormalise(
+              normalisedTicksTensor,
+              normalisedFeature.min[0],
+              normalisedFeature.max[0]
+            );
+            const yTicksTensor = denormalise(
+              normalisedTicksTensor.reverse(),
+              normalisedFeature.min[1],
+              normalisedFeature.max[1]
+            );
+            return [
+              valuesTensor.array(),
+              xTicksTensor.array(),
+              yTicksTensor.array(),
+            ];
+          }
+        );
+        const [values, xTicks, yTicks] = await Promise.all([
+          valuesPromise,
+          xTicksPromise,
+          yTicksPromise,
+        ]);
+
+        const xTickLabels = xTicks.map((v) => (v / 1000).toFixed(1) + "k sqft");
+        const yTickLabels = yTicks.map(
+          (v) => "$" + (v / 1000).toFixed(0) + "k"
+        );
+        const data = { values, xTickLabels, yTickLabels };
+        tfvis.render.heatmap(
+          { name: `${name} (full domain)`, tab: "Predictions" },
+          data,
+          {
+            height: size,
+            domain: [0, 1],
+          }
+        );
+        tfvis.render.heatmap(
+          { name: `${name} (local)`, tab: "Predictions" },
+          data,
+          {
+            height: size,
+          }
+        );
       }
       async function plotPredictionLine() {
         const [xs, ys] = tf.tidy(() => {
@@ -147,6 +221,50 @@
         });
         plot(points, "Square feet", predictedPoints);
       }
+      async function plotClasses(
+        pointsArray,
+        classKey,
+        size = 400,
+        equalizeClassSizes = true
+      ) {
+        const allSeries = {};
+        pointsArray.forEach((item) => {
+          const seriesNames = `${classKey}: ${item.class}`;
+          let series = allSeries[seriesNames];
+          if (!series) {
+            series = [];
+            allSeries[seriesNames] = series;
+          }
+          series.push(item);
+        });
+        if (equalizeClassSizes) {
+          let maxLength = null;
+          Object.values(allSeries).forEach((series) => {
+            if (
+              maxLength === null ||
+              (series.length < maxLength && series.length >= 100)
+            ) {
+              maxLength = series.length;
+            }
+          });
+          Object.keys(allSeries).forEach((keyName) => {
+            allSeries[keyName] = allSeries[keyName].slice(0, maxLength);
+            if (allSeries[keyName].length < 100) {
+              Reflect.deleteProperty(allSeries, keyName);
+            }
+          });
+        }
+        tfvis.render.scatterplot(
+          { name: "Square feet vs House Price", styles: { width: "100%" } },
+          { values: Object.values(allSeries), series: Object.keys(allSeries) },
+          {
+            xLabel: "Square Feet",
+            yLabel: "Price",
+            height: size,
+            width: size * 1.5,
+          }
+        );
+      }
       async function plot(pointsArray, featureName, predictedPoints = null) {
         const values = [pointsArray.slice(0, 1000)]; //limitar para diminuir a densidade da linha
         const series = ["original"];
@@ -163,8 +281,27 @@
           }
         );
       }
-
       function normalise(tensor, previousMin = null, previousMax = null) {
+        const featureDimensions = tensor.shape.length > 1 && tensor.shape[1];
+
+        if (featureDimensions && featureDimensions > 1) {
+          const features = tf.split(tensor, featureDimensions, 1);
+
+          const normalisedFeatures = features.map((featureTensor, i) =>
+            normalise(
+              featureTensor,
+              previousMin ? previousMin[i] : null,
+              previousMax ? previousMax[i] : null
+            )
+          );
+          const returnTensor = tf.concat(
+            normalisedFeatures.map((f) => f.tensor),
+            1
+          );
+          const min = normalisedFeatures.map((f) => f.min);
+          const max = normalisedFeatures.map((f) => f.max);
+          return { tensor: returnTensor, min, max };
+        }
         const min = previousMin || tensor.min();
         const max = previousMax || tensor.max();
         const normalisedTensor = tensor.sub(min).div(max.sub(min));
@@ -174,8 +311,18 @@
           max,
         };
       }
-
       function denormalise(tensor, min, max) {
+        const featureDimensions = tensor.shape.length > 1 && tensor.shape[1];
+        if (featureDimensions && featureDimensions > 1) {
+          const features = tensor.split(tensor, featureDimensions, 1);
+
+          const denormalized = features.map((featureTensor, i) =>
+            denormalise(featureTensor, min[i], max[i])
+          );
+          console.log({ denormalized });
+          const returnTensor = tf.concat(denormalized, 1);
+          return returnTensor;
+        }
         const denormalisedTensor = tensor.mul(max.sub(min)).add(min);
         return denormalisedTensor;
       }
@@ -185,30 +332,30 @@
 
         model.add(
           tf.layers.dense({
-            units: 10,
+            units: 10, //10 neuronios
             useBias: true,
             activation: "sigmoid",
-            inputDim: 1,
+            inputDim: 2, // como são duas dimenções modificamos aqui
           })
         );
         model.add(
           tf.layers.dense({
-            units: 10,
+            units: 10, //10 neuronios
             useBias: true,
             activation: "sigmoid",
           })
         );
         model.add(
           tf.layers.dense({
-            units: 1,
+            units: 1, // 1 neuronio de saida somente
             useBias: true,
             activation: "sigmoid",
           })
         );
 
-        const optimizer = tf.train.sgd(0.1);
+        const optimizer = tf.train.adam(); // utilize adam
         model.compile({
-          loss: "meanSquaredError",
+          loss: "binaryCrossentropy", // mude de MSE para binary
           optimizer,
         });
 
@@ -219,7 +366,7 @@
           tf.tensor2d([[weight]]), // kernel input multplier
           tf.tensor1d([bias]), // BIAS
         ]);
-        await plotPredictionLine();
+
         const layer = model.getLayer(undefined, 0);
         tfvis.show.layer({ name: "Layer 1" }, layer);
       }
@@ -235,15 +382,15 @@
 
         return model.fit(trainingFeatureTensor, trainingLabelTensor, {
           batchSize: 32,
-          epochs: 100,
+          epochs: 500,
           validationSplit: 0.2,
           callbacks: {
             onEpochEnd,
-            // onEpochBegin: async function () {
-            //   await plotPredictionLine();
-            //   const layer = model.getLayer(undefined, 0);
-            //   tfvis.show.layer({ name: "Layer 1" }, layer);
-            // },
+            onEpochBegin: async function () {
+              await plotPredictionHeatMap();
+              const layer = model.getLayer(undefined, 0);
+              tfvis.show.layer({ name: "Layer 1" }, layer);
+            },
           },
         });
       }
@@ -269,16 +416,13 @@
           points.pop(); // remove one element
         }
         tf.util.shuffle(points);
-        plot(points, "Square feet");
+        plotClasses(points, "WaterFront");
         // Extract Features (inputs)
-        const featureValues = points.map((p) => p.x);
-        const featureTensor = tf.tensor2d(featureValues, [
-          featureValues.length,
-          1,
-        ]);
+        const featureValues = points.map((p) => [p.x, p.y]);
+        const featureTensor = tf.tensor2d(featureValues);
 
         // Extract Labels (outputs)
-        const labelValues = points.map((p) => p.y);
+        const labelValues = points.map((p) => p.class);
 
         const labelTensor = tf.tensor2d(labelValues, [labelValues.length, 1]);
 
@@ -416,7 +560,14 @@
 
               <label
                 >Square feet of living space:
-                <input type="number" id="prediction-input" placeholder="2000"
+                <input type="number" id="prediction-input-1" placeholder="2000"
+              /></label>
+              <label
+                >House Price ($):
+                <input
+                  type="number"
+                  id="prediction-input-2"
+                  placeholder="1000000"
               /></label>
               <button
                 autocomplete="off"
@@ -425,7 +576,7 @@
                 disabled
                 onclick="predict()"
               >
-                Predict house price
+                Predict class
               </button>
               <p><strong id="prediction-output"></strong></p>
             </div>

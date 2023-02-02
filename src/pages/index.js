@@ -1,12 +1,12 @@
 import Link from "next/link";
-
+import projects from "../constants/projects";
 export default function index() {
   return (
     <main
       style={{
         display: "flex",
         flexDirection: "column",
-        backgroundColor: "wheat",
+        backgroundColor: "white",
         justifyContent: "center",
         alignItems: "center",
         alignContent: "center",
@@ -14,18 +14,17 @@ export default function index() {
         height: "100vh",
       }}
     >
-      <Link
-        style={{ color: "green", margin: "1rem", fontSize: "2rem" }}
-        href={"/index.html"}
-      >
-        Binary classification with TensorFlow.js
-      </Link>
-      <Link
-        style={{ color: "blue", margin: "1rem", fontSize: "2rem" }}
-        href={"/linear-section-6-checkpoint.html"}
-      >
-        Linear classification with TensorFlow.js
-      </Link>
+      {projects.map((item, index) => {
+        return (
+          <Link
+            key={index}
+            style={{ color: "blue", margin: "1rem", fontSize: "2rem" }}
+            href={"/" + item.file}
+          >
+            {item.name}
+          </Link>
+        );
+      })}
     </main>
   );
 }
