@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title>TensorFlow.js linear regression</title>
+    <title>TensorFlow.js Multi-class classification</title>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@2.0.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis"></script>
     <link
@@ -15,6 +15,16 @@
   </head>
   <body>
     <script type="text/javascript">
+      function getClassIndex(className) {
+        if (className === 1 || className === "1") return 0; //1 bedroom
+        if (className === 2 || className === "2") return 1; //2 bedroom
+        return 2; //3+ bedroom
+      }
+      function getClassName(classIndex) {
+        if (classIndex === 0) return "1"; //1 bedroom
+        if (classIndex === 1) return "2"; //2 bedroom
+        return "3+"; //3+ bedroom
+      }
       async function toggleVisor() {
         tfvis.visor().toggle();
       }
@@ -41,18 +51,27 @@
               normalisedFeature.min,
               normalisedFeature.max
             );
-            const normalizedPredict = model.predict(normalizedInput.tensor);
-            const outputTensor = denormalise(
-              normalizedPredict,
-              normalisedLabel.min,
-              normalisedLabel.max
+
+            const normalisedOutputTensor = model.predict(
+              normalizedInput.tensor
             );
-            const [outputValue] = outputTensor.dataSync();
-            document.getElementById(
-              "prediction-output"
-            ).innerHTML = `The likehood of being a waterfront property is<br><span style="font-size: 2em">${parseFloat(
-              (outputValue * 100).toFixed(1)
-            )}%</span>`;
+            //For some reason it returns an error on denormalisation
+            //also return from predict normalised values looks fine ... then....
+            // const outputTensor = denormalise(
+            //   normalisedOutputTensor,
+            //   normalisedLabel.min,
+            //   normalisedLabel.max
+            // );
+
+            const outputs = normalisedOutputTensor.dataSync();
+            let outputString = "";
+            outputs.forEach((item, i) => {
+              outputString += `Likelihood of having ${getClassName(
+                i
+              )} bedrooms is ${(outputs[i] * 100).toFixed(1)}%<br>`;
+            });
+            document.getElementById("prediction-output").innerHTML =
+              outputString;
           });
         }
       }
@@ -76,7 +95,7 @@
           alert("Could not load: no saved model found");
         }
       }
-      const storageId = "kc-house-price-binary";
+      const storageId = "kc-house-price-multi";
       async function save() {
         const saveResults = await model.save(`localstorage://${storageId}`);
 
@@ -183,22 +202,30 @@
         const yTickLabels = yTicks.map(
           (v) => "$" + (v / 1000).toFixed(0) + "k"
         );
-        const data = { values, xTickLabels, yTickLabels };
-        tfvis.render.heatmap(
-          { name: `${name} (full domain)`, tab: "Predictions" },
-          data,
-          {
-            height: size,
-            domain: [0, 1],
-          }
-        );
-        tfvis.render.heatmap(
-          { name: `${name} (local)`, tab: "Predictions" },
-          data,
-          {
-            height: size,
-          }
-        );
+        tf.unstack(values, 2).forEach((values, i) => {
+          const data = { values, xTickLabels, yTickLabels };
+          tfvis.render.heatmap(
+            {
+              name: `Bedrooms: ${getClassName(i)} (full domain)`,
+              tab: "Predictions",
+            },
+            data,
+            {
+              height: size,
+              domain: [0, 1],
+            }
+          );
+          tfvis.render.heatmap(
+            {
+              name: `Bedrooms: ${getClassName(i)} (local)`,
+              tab: "Predictions",
+            },
+            data,
+            {
+              height: size,
+            }
+          );
+        });
       }
       async function plotPredictionLine() {
         const [xs, ys] = tf.tidy(() => {
@@ -225,7 +252,7 @@
         pointsArray,
         classKey,
         size = 400,
-        equalizeClassSizes = true
+        equalizeClassSizes = false
       ) {
         const allSeries = {};
         pointsArray.forEach((item) => {
@@ -286,7 +313,7 @@
 
         if (featureDimensions && featureDimensions > 1) {
           const features = tf.split(tensor, featureDimensions, 1);
-
+          console.log(features.length);
           const normalisedFeatures = features.map((featureTensor, i) =>
             normalise(
               featureTensor,
@@ -319,7 +346,6 @@
           const denormalized = features.map((featureTensor, i) =>
             denormalise(featureTensor, min[i], max[i])
           );
-          console.log({ denormalized });
           const returnTensor = tf.concat(denormalized, 1);
           return returnTensor;
         }
@@ -347,15 +373,15 @@
         );
         model.add(
           tf.layers.dense({
-            units: 1, // 1 neuronio de saida somente
+            units: 3, // 1 neuronio de saida somente
             useBias: true,
-            activation: "sigmoid",
+            activation: "softmax",
           })
         );
 
         const optimizer = tf.train.adam(); // utilize adam
         model.compile({
-          loss: "binaryCrossentropy", // mude de MSE para binary
+          loss: "categoricalCrossentropy",
           optimizer,
         });
 
@@ -405,26 +431,30 @@
         const houseSalesDataset = tf.data.csv("/kc_house_data.csv");
 
         // Extract x and y values to plot
-        const pointsDataset = houseSalesDataset.map((record) => ({
-          x: record.sqft_living,
-          y: record.price,
-          class: record.waterfront,
-        }));
+        const pointsDataset = houseSalesDataset
+          .map((record) => ({
+            x: record.sqft_living,
+            y: record.price,
+            class: record.bedrooms > 2 ? "3+" : record.bedrooms,
+          }))
+          .filter((item) => item.class !== 0);
         points = await pointsDataset.toArray();
         if (points.length % 2 !== 0) {
           // If odd number of elements
           points.pop(); // remove one element
         }
         tf.util.shuffle(points);
-        plotClasses(points, "WaterFront");
+        plotClasses(points, "Bedrooms");
         // Extract Features (inputs)
         const featureValues = points.map((p) => [p.x, p.y]);
         const featureTensor = tf.tensor2d(featureValues);
 
         // Extract Labels (outputs)
-        const labelValues = points.map((p) => p.class);
+        const labelValues = points.map((p) => getClassIndex(p.class));
 
-        const labelTensor = tf.tensor2d(labelValues, [labelValues.length, 1]);
+        const labelTensor = tf.tidy(() =>
+          tf.oneHot(tf.tensor1d(labelValues, "int32"), 3)
+        );
 
         // Normalise features and labels
         normalisedFeature = normalise(featureTensor);
@@ -452,8 +482,8 @@
     <!--   Header   -->
     <div class="section no-pad-bot" id="index-banner">
       <div class="container">
-        <h5 class="header center green-text small">
-          Binary classification with TensorFlow.js
+        <h5 class="header center red-text small">
+          Multi-class classification with TensorFlow.js
         </h5>
         <div class="row center">
           <h6 class="header col s12 light">
@@ -464,12 +494,12 @@
     </div>
 
     <!--   Misc buttons   -->
-    <div class="section no-pad-bot light-green lighten-4">
+    <div class="section no-pad-bot red lighten-4">
       <div class="container">
         <div class="row center">
           <button
             id="toggle-button"
-            class="waves-effect waves-light light-green btn-small"
+            class="waves-effect waves-light red btn-small"
             onclick="toggleVisor()"
           >
             Toggle Visor
@@ -486,7 +516,7 @@
           <!--   Training   -->
           <div class="col s12 m6">
             <div class="icon-block">
-              <h3 class="center light-green-text">
+              <h3 class="center red-text">
                 <i class="material-icons" style="font-size: 2em">build</i>
               </h3>
               <h5 class="center">Train & Test</h5>
@@ -509,7 +539,7 @@
                 <button
                   autocomplete="off"
                   id="train-button"
-                  class="waves-effect light-green waves-light btn"
+                  class="waves-effect red waves-light btn"
                   disabled
                   onclick="train()"
                 >
@@ -518,7 +548,7 @@
                 <button
                   autocomplete="off"
                   id="test-button"
-                  class="waves-effect light-green waves-light btn"
+                  class="waves-effect red waves-light btn"
                   disabled
                   onclick="test()"
                 >
@@ -531,7 +561,7 @@
                 <button
                   autocomplete="off"
                   id="load-button"
-                  class="waves-effect light-green waves-light btn-small"
+                  class="waves-effect red waves-light btn-small"
                   disabled
                   onclick="load()"
                 >
@@ -540,7 +570,7 @@
                 <button
                   autocomplete="off"
                   id="save-button"
-                  class="waves-effect light-green waves-light btn-small"
+                  class="waves-effect red waves-light btn-small"
                   disabled
                   onclick="save()"
                 >
@@ -553,7 +583,7 @@
           <!--   Prediction   -->
           <div class="col s12 m6">
             <div class="icon-block">
-              <h3 class="center light-green-text">
+              <h3 class="center red-text">
                 <i class="material-icons" style="font-size: 2em">timeline</i>
               </h3>
               <h5 class="center">Predict</h5>
@@ -572,7 +602,7 @@
               <button
                 autocomplete="off"
                 id="predict-button"
-                class="waves-effect light-green waves-light btn"
+                class="waves-effect red waves-light btn"
                 disabled
                 onclick="predict()"
               >

@@ -1,8 +1,15 @@
 const projects = [
-  { file: "index.html", name: "Binary classification with TensorFlow.js" },
   {
-    file: "linear-section-6-checkpoint.html",
+    file: "binary.html",
+    name: "Binary classification with TensorFlow.js",
+  },
+  {
+    file: "linear.html",
     name: "Linear classification with TensorFlow.js",
+  },
+  {
+    file: "multi.html",
+    name: "Multi-class classification with TensorFlow.js",
   },
   ,
 ];
